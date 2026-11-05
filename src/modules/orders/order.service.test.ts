@@ -2,16 +2,17 @@ import type { Repository } from 'typeorm';
 import { describe, expect, it, vi } from 'vitest';
 import type { Product } from '../products/product.entity.js';
 import { type Order, OrderStatus } from './order.entity.js';
-import { createOrderService, storeToday } from './order.service.js';
+import { addDays, createOrderService, storeToday } from './order.service.js';
 
-const carrot = { id: '11111111-1111-4111-8111-111111111111', name: 'Bolo de cenoura', priceCents: 6500, available: true };
-const orange = { id: '22222222-2222-4222-8222-222222222222', name: 'Bolo de laranja', priceCents: 7000, available: true };
-const soldOut = { id: '33333333-3333-4333-8333-333333333333', name: 'Bolo de fubá', priceCents: 5500, available: false };
+const carrot = { id: '11111111-1111-4111-8111-111111111111', name: 'Bolo de cenoura', priceCents: 6500, available: true, leadTimeDays: 1 };
+const orange = { id: '22222222-2222-4222-8222-222222222222', name: 'Bolo de laranja', priceCents: 7000, available: true, leadTimeDays: 1 };
+const soldOut = { id: '33333333-3333-4333-8333-333333333333', name: 'Bolo de fubá', priceCents: 5500, available: false, leadTimeDays: 1 };
+const vegan = { id: '55555555-5555-4555-8555-555555555555', name: 'Bolo vegano', priceCents: 8500, available: true, leadTimeDays: 3 };
 
 const userId = '99999999-9999-4999-8999-999999999999';
 const orderId = '44444444-4444-4444-8444-444444444444';
 
-const makeService = ({ stored = null as Partial<Order> | null, catalog = [carrot, orange, soldOut] } = {}) => {
+const makeService = ({ stored = null as Partial<Order> | null, catalog = [carrot, orange, soldOut, vegan] } = {}) => {
     const orders = {
         create: vi.fn((data: Partial<Order>) => data),
         save: vi.fn(async (data: Partial<Order>) => ({ id: orderId, ...data })),
@@ -165,5 +166,37 @@ describe('orderService.updateStatus', () => {
 
         await expect(service.updateStatus(orderId, to)).rejects.toMatchObject({ status: 409 });
         expect(orders.update).not.toHaveBeenCalled();
+    });
+});
+
+describe('addDays', () => {
+    it('crosses month and year boundaries', () => {
+        expect(addDays('2026-10-31', 1)).toBe('2026-11-01');
+        expect(addDays('2026-12-30', 3)).toBe('2027-01-02');
+    });
+});
+
+describe('orderService.create with lead times per product', () => {
+    it('accepts the first day the slowest product allows', async () => {
+        const { service, orders } = makeService();
+
+        await service.create({
+            userId,
+            deliveryDate: '2026-10-27',
+            items: [{ productId: carrot.id, quantity: 1 }, { productId: vegan.id, quantity: 1 }],
+        });
+
+        expect(orders.save).toHaveBeenCalled();
+    });
+
+    it('refuses a date that is fine for one product but too soon for another in the same order', async () => {
+        const { service, orders } = makeService();
+
+        await expect(service.create({
+            userId,
+            deliveryDate: '2026-10-26',
+            items: [{ productId: carrot.id, quantity: 1 }, { productId: vegan.id, quantity: 1 }],
+        })).rejects.toMatchObject({ status: 422, message: 'Earliest delivery date for these products is 2026-10-27' });
+        expect(orders.save).not.toHaveBeenCalled();
     });
 });

@@ -1,8 +1,12 @@
 import type { NextFunction, Request, Response } from 'express';
 import { z, type ZodType } from 'zod';
 
-const invalid = (res: Response, message: string, error: z.ZodError) =>
-    res.status(400).json({ message, errors: z.flattenError(error).fieldErrors });
+// Form errors are rules about the whole object, like "send at least one field".
+const invalid = (res: Response, message: string, error: z.ZodError) => {
+    const { formErrors, fieldErrors } = z.flattenError(error);
+
+    return res.status(400).json({ message, errors: fieldErrors, ...(formErrors.length ? { formErrors } : {}) });
+};
 
 export const validateBody = (schema: ZodType) => (req: Request, res: Response, next: NextFunction) => {
     const result = schema.safeParse(req.body ?? {});

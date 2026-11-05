@@ -16,6 +16,8 @@ const makeApp = (overrides: Partial<OrderService> = {}) => {
     const productService = {
         list: vi.fn().mockResolvedValue([]),
         create: vi.fn(async (data) => ({ id: productId, ...data })),
+        update: vi.fn(async (id, data) => ({ id, ...data })),
+        remove: vi.fn(async () => {}),
     } as ProductService;
 
     const orderService = {
@@ -66,8 +68,67 @@ describe('products', () => {
         const invalid = await request(app).post('/products').set(apiKey).send({ name: 'Bolo de milho', priceCents: 50.5 });
 
         expect(created.status).toBe(201);
-        expect(created.body).toMatchObject({ name: 'Bolo de milho', description: '', available: true });
+        expect(created.body).toMatchObject({
+            name: 'Bolo de milho',
+            description: '',
+            category: 'CAKE',
+            imageUrl: null,
+            dietaryTags: [],
+            leadTimeDays: 1,
+            available: true,
+            featured: false,
+        });
         expect(invalid.status).toBe(400);
+    });
+
+    it('updates only the fields sent and removes repeated dietary tags', async () => {
+        const { app, productService } = makeApp();
+
+        const res = await request(app)
+            .patch(`/products/${productId}`)
+            .set(apiKey)
+            .send({ priceCents: 7000, dietaryTags: ['VEGAN', 'VEGAN'] });
+
+        expect(res.status).toBe(200);
+        expect(productService.update).toHaveBeenCalledWith(productId, { priceCents: 7000, dietaryTags: ['VEGAN'] });
+    });
+
+    it.each([
+        ['an empty body', {}],
+        ['an image that is not https', { imageUrl: 'http://example.com/bolo.webp' }],
+        ['an unknown category', { category: 'BREAD' }],
+        ['an unknown dietary tag', { dietaryTags: ['KETO'] }],
+        ['a lead time of zero days', { leadTimeDays: 0 }],
+    ])('rejects an update with %s', async (_label, body) => {
+        const { app, productService } = makeApp();
+
+        const res = await request(app).patch(`/products/${productId}`).set(apiKey).send(body);
+
+        expect(res.status).toBe(400);
+        expect(productService.update).not.toHaveBeenCalled();
+    });
+
+    it('explains why an empty update was rejected', async () => {
+        const res = await request(makeApp().app).patch(`/products/${productId}`).set(apiKey).send({});
+
+        expect(res.body.formErrors).toEqual(['Send at least one field to update']);
+    });
+
+    it('deletes a product with 204', async () => {
+        const { app, productService } = makeApp();
+
+        const res = await request(app).delete(`/products/${productId}`).set(apiKey);
+
+        expect(res.status).toBe(204);
+        expect(productService.remove).toHaveBeenCalledWith(productId);
+    });
+
+    it('lets the image be removed with null', async () => {
+        const { app, productService } = makeApp();
+
+        await request(app).patch(`/products/${productId}`).set(apiKey).send({ imageUrl: null });
+
+        expect(productService.update).toHaveBeenCalledWith(productId, { imageUrl: null });
     });
 });
 

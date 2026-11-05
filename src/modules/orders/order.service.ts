@@ -11,6 +11,14 @@ const STORE_TIME_ZONE = 'America/Sao_Paulo';
 export const storeToday = (now = new Date()) =>
     new Intl.DateTimeFormat('en-CA', { timeZone: STORE_TIME_ZONE }).format(now);
 
+// Calendar arithmetic on YYYY-MM-DD strings; UTC avoids daylight saving shifts.
+export const addDays = (date: string, days: number) => {
+    const day = new Date(`${date}T00:00:00Z`);
+    day.setUTCDate(day.getUTCDate() + days);
+
+    return day.toISOString().slice(0, 10);
+};
+
 // Which status each status may move to; anything else is refused.
 export const NEXT_STATUSES: Record<OrderStatus, OrderStatus[]> = {
     [OrderStatus.PENDING]: [OrderStatus.CONFIRMED, OrderStatus.CANCELLED],
@@ -45,11 +53,6 @@ export const createOrderService = ({ orders, products, today = storeToday }: Ord
 
     return {
         async create({ userId, items, deliveryDate, notes }: CreateOrderInput) {
-            // Cakes from the menu need 24 hours' notice, so delivery starts tomorrow.
-            if (deliveryDate <= today()) {
-                throw new HttpError(422, 'Delivery date must be after today');
-            }
-
             const quantities = new Map<string, number>();
             for (const { productId, quantity } of items) {
                 quantities.set(productId, (quantities.get(productId) ?? 0) + quantity);
@@ -57,15 +60,29 @@ export const createOrderService = ({ orders, products, today = storeToday }: Ord
 
             const found = await products.findBy({ id: In([...quantities.keys()]) });
 
-            const orderItems = [...quantities].map(([productId, quantity]) => {
+            const ordered = [...quantities].map(([productId, quantity]) => {
                 const product = found.find(({ id }) => id === productId);
 
                 if (!product?.available) {
                     throw new HttpError(422, `Product unavailable: ${product?.name ?? productId}`);
                 }
 
-                return { productId, productName: product.name, unitPriceCents: product.priceCents, quantity };
+                return { product, quantity };
             });
+
+            // The whole order is delivered together, so it waits for the product that needs the most notice.
+            const earliestDelivery = addDays(today(), Math.max(...ordered.map(({ product }) => product.leadTimeDays)));
+
+            if (deliveryDate < earliestDelivery) {
+                throw new HttpError(422, `Earliest delivery date for these products is ${earliestDelivery}`);
+            }
+
+            const orderItems = ordered.map(({ product, quantity }) => ({
+                productId: product.id,
+                productName: product.name,
+                unitPriceCents: product.priceCents,
+                quantity,
+            }));
 
             const totalCents = orderItems.reduce((sum, item) => sum + item.unitPriceCents * item.quantity, 0);
 
